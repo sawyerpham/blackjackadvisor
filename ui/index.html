@@ -1,0 +1,1545 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Live blackjack advisor</title>
+<style>
+  :root {
+    --bg:#0b0d12; --panel:#141821; --line:#232936;
+    --ink:#e8ecf4; --dim:#8892a6;
+    --good:#25c26e; --bad:#e2444b; --warn:#e0a12a; --cool:#4a90d9;
+    --rich:#25c26e; --poor:#e2444b;
+    /* Clipped to the glyphs and slid across. Every rule that paints a BJ uses
+       this one, so they cannot drift apart. */
+    --gold:linear-gradient(100deg,
+      #8a6a12 0%, #d4a017 20%, #ffd966 38%, #fffbe6 50%, #ffd966 62%, #d4a017 80%, #8a6a12 100%);
+
+    /* ---- type scale ----------------------------------------------------
+       One ladder, roughly 1.25 between steps, and every piece of text on the
+       page takes a step — nothing sets a raw px size. Text steps carry the
+       reading hierarchy; the figure steps are a separate ladder, because a
+       stat is sized by how far away it has to be legible. */
+    --fs-micro:   10px;  /* rank sub-labels, metric keys, unit annotations   */
+    --fs-caption: 12px;  /* secondary lines, section headers, buttons, notes */
+    --fs-body:    14px;  /* default reading size                             */
+    --fs-stat-sm: 18px;  /* rank counts                                      */
+    --fs-stat:    22px;  /* card ranks, seat figures, bet amounts, countdown */
+    --fs-stat-lg: 28px;  /* headline metrics, dealer total, true count       */
+    --fs-display: 34px;  /* the playing decision for your own hand           */
+    --fs-hero:    61px;  /* SIT / WAIT / OUT — the verdict                   */
+  }
+  * { box-sizing:border-box; }
+  body {
+    /* The default 8px body margin sits OUTSIDE min-height:100vh and overflows
+       the page by 16px, which breaks the centring. */
+    margin:0;
+    background:var(--bg); color:var(--ink);
+    /* Longhands, not the `font` shorthand: anything added without its own
+       size then lands on --fs-body rather than an off-ladder 16px. */
+    font-family:ui-monospace,"Cascadia Mono",Consolas,monospace;
+    font-size:var(--fs-body);
+    line-height:1.4;
+    padding:14px; display:grid; gap:12px;
+    /* Rows size to their content and the stack is centred, so a dashboard
+       shorter than the screen sits in the middle instead of hanging off the
+       top edge. Taller than the viewport still scrolls normally. */
+    grid-template-rows:repeat(5, auto);
+    min-height:100vh; align-content:center;
+  }
+  /* Capped and centred so a line is readable in one glance and the stack has
+     one left and right edge. The felt shares the cap so it lines up. */
+  .capped { max-width:1280px; width:100%; margin-inline:auto; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px 16px; }
+
+  /* ---- headline ---- */
+  /* Scaled to 80% throughout, every size by the same factor, so the
+     proportions are the ones they were designed at. */
+  #head { display:grid; grid-template-columns:1fr auto; align-items:center; gap:13px; }
+  #action {
+    font-size:var(--fs-hero); font-weight:800; letter-spacing:.06em; line-height:1;
+    padding:11px 21px; border-radius:10px; text-align:center; min-width:272px;
+    transition:background .12s, color .12s;
+    /* BLACKJACK is twice the width of STAND, and the grid column would take
+       the second line instead of the width. Wrapped it reads as a smaller,
+       different-looking word, so the box grows instead. */
+    white-space:nowrap;
+  }
+  .a-SIT   { background:var(--good); color:#04140a; }
+  .a-STAY  { background:#17603a; color:#d6ffe8; }
+  .a-LEAVE { background:var(--bad);  color:#1a0304; }
+  .a-OUT   { background:#1b2130; color:var(--dim); }
+  .a-WAIT  { background:var(--warn); color:#181000; }
+  #why { color:var(--dim); font-size:var(--fs-caption); margin-top:6px; }
+  .metrics { display:grid; grid-template-columns:repeat(3,auto); gap:21px; text-align:right; }
+  /* Every glyph is a full cell in a monospace face, so two periods sat a whole
+     character apart. The margin gives back the trailing space letter-spacing
+     adds after the LAST character, which would drag the next word left. */
+  .clip { letter-spacing:-.36em; margin-right:.36em; }
+  .metric .k { color:var(--dim); font-size:var(--fs-micro); text-transform:uppercase; letter-spacing:.1em; }
+  .metric .v { font-size:var(--fs-stat-lg); font-weight:700; line-height:1.1; }
+  .metric .s { font-size:var(--fs-micro); color:var(--dim); margin-top:2px; min-height:11px; }
+  .pos { color:var(--good); } .neg { color:var(--bad); }
+  /* A real number you can act on, but not an endorsement of being here. */
+  .hedge { color:var(--warn); }
+  .metric .v.cut { font-size:var(--fs-stat); color:var(--warn); letter-spacing:.04em; }
+  #stance { font-size:var(--fs-micro); margin-top:5px; }
+
+  /* ---- trust: the bottom row of the headline panel ---- */
+  /* Spans both columns, and is separated by a rule rather than being its own
+     panel — it qualifies the advice above it, so it belongs with it. */
+  #trust { grid-column:1 / -1; display:flex; align-items:center; gap:10px;
+           font-size:var(--fs-caption); border-top:1px solid var(--line);
+           padding-top:10px; margin-top:4px; }
+  .badge { padding:4px 12px; border-radius:999px; font-weight:700; letter-spacing:.08em; }
+  .t-yes { background:#12351f; color:var(--good); border:1px solid #1c5b33; }
+  /* Loud: it changes what the NEXT bet is worth, though not this one. */
+  #cutwarn { display:none; padding:4px 12px; border-radius:999px; font-weight:700;
+             letter-spacing:.08em; background:#3a2a06; color:var(--warn);
+             border:1px solid #6b4f0d; }
+  .t-no  { background:#3a1418; color:var(--bad);  border:1px solid #6b2027; }
+
+  /* Far right: destructive-ish, so not next to the badge where it can be hit
+     while reading the reason. */
+  #untrust {
+    margin-left:auto; background:#2a1519; color:var(--bad);
+    border:1px solid #5a1f26; border-radius:6px;
+    padding:5px 12px; font:inherit; font-size:var(--fs-caption); cursor:pointer;
+  }
+  #untrust:hover { background:var(--bad); color:#fff; }
+  #untrust:disabled { opacity:.35; cursor:default; background:#2a1519; color:var(--bad); }
+
+  /* ---- shoe ---- */
+  /* Stats first, bar last: the numbers are what you read, the bar is context. */
+  #shoerow { display:grid; grid-template-columns:auto minmax(0,1fr); gap:26px; align-items:center; }
+  #tcstats { text-align:left; }
+  #barblock { width:100%; }
+  #bar { position:relative; height:26px; background:#0a0c11; border:1px solid var(--line); border-radius:6px; overflow:hidden; }
+  #fill { height:100%; background:linear-gradient(90deg,#2a4a7a,#4a90d9); width:0%; transition:width .3s; }
+  #cut { position:absolute; top:-3px; bottom:-3px; width:3px; background:var(--warn); }
+  .sub { color:var(--dim); font-size:var(--fs-caption); margin-top:6px; display:flex; gap:18px; flex-wrap:wrap; }
+
+  /* ---- ranks ---- */
+  /* ---- bet behind (spectating only) ---- */
+  #behindpanel { display:none; }
+  #behindhead { display:flex; align-items:baseline; gap:12px; margin-bottom:10px; }
+  #behindhead .t { font-size:var(--fs-caption); text-transform:uppercase; letter-spacing:.1em;
+                   color:var(--dim); white-space:nowrap; }
+  #behindnote { min-width:0; }
+  #behindtotal { margin-left:auto; font-size:var(--fs-body); color:var(--dim); white-space:nowrap; }
+  /* Two columns: a wide single row left most of the panel empty and a long
+     reason nowhere to wrap. minmax(0,…) lets the reason shrink rather than
+     forcing the column wider than its share. */
+  #behindseats { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:8px; }
+  .backseat { background:#0e1119; border:1px solid #2f6b45; border-radius:8px;
+              padding:8px 14px; display:flex; align-items:baseline; gap:12px;
+              justify-content:space-between; }
+  /* Who and how much are one decision, so they read at one size. */
+  .backseat .nm { font-size:var(--fs-stat); font-weight:700; }
+  .backseat .nm .st { color:var(--dim); font-weight:400; }
+  .backseat .amt { font-size:var(--fs-stat); font-weight:800; color:var(--good); line-height:1.1;
+                   flex:none; }
+  .backseat .why { font-size:var(--fs-caption); color:var(--dim); }
+  #behindnone { font-size:var(--fs-body); color:var(--dim); }
+  #behindnone .lead { color:var(--ink); }
+
+  /* ---- how the table is playing (spectating only) ---- */
+  #playerspanel { display:none; }
+  #playershead { display:flex; align-items:baseline; gap:12px; margin-bottom:10px; }
+  /* The title must not wrap: a flex sibling with no nowrap gives away its own
+     width first, and the note beside it grew. */
+  #playershead .t { font-size:var(--fs-caption); text-transform:uppercase; letter-spacing:.1em;
+                    color:var(--dim); white-space:nowrap; }
+  #playersort {
+    margin-left:auto; background:#1b2130; color:var(--ink); border:1px solid var(--line);
+    border-radius:6px; padding:5px 12px; font:inherit; font-size:var(--fs-caption); cursor:pointer;
+  }
+  #playersort:hover { border-color:var(--cool); }
+  /* 137px is the floor, not the width: every size inside the tile came down a
+     step so the text is legible at it, and 1fr shares out what the panel has.
+     The track count is a function of the available width, so the row re-lays
+     itself with no JS and no resize listener.
+
+     auto-FIT, so tracks no player is sitting in collapse and their width goes
+     to the tiles that exist; auto-fill would leave a ragged gap. The trade is
+     that few players means wide tiles. The min is an explicit 137px rather
+     than auto, which stops a long nickname growing its own track. */
+  #players { display:grid; grid-template-columns:repeat(auto-fit,minmax(137px,1fr)); gap:8px; }
+  .who { background:#0e1119; border:1px solid var(--line); border-radius:8px; padding:7px 9px; }
+  /* Name left, seat letter hard right: the seat is what you match against the
+     felt, so it wants a column rather than a separator that moves. */
+  .who .nm { font-size:var(--fs-caption); font-weight:700; display:flex; align-items:baseline;
+             justify-content:space-between; gap:8px; }
+  /* The name is the part that gives, rather than pushing the seat letter off. */
+  .who .nm .n { min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .who .nm .st { color:var(--dim); font-weight:400; flex:none; }
+  /* One line and one size: neither is the headline, and the pair is the point. */
+  .who .nums { display:flex; justify-content:space-between; align-items:baseline;
+               gap:8px; margin-top:2px; }
+  .who .pc, .who .bal { font-size:var(--fs-stat-sm); font-weight:800; line-height:1.15; }
+  .bal-up   { color:var(--good); }
+  .bal-down { color:var(--bad); }
+  .bal-even { color:var(--dim); }
+  /* The longest string in the tile, so at the old size it set the tile's width.
+     Smaller and allowed to wrap, it stops being the constraint. */
+  /* display:block undoes the shoe panel's .sub, a flex row with an 18px gap.
+     Inherited here it made every <span> its own flex item: the timeout "?" sat
+     18px from the count it qualifies, and w/l/p came out as five columns. */
+  .who .sub { font-size:var(--fs-micro); color:var(--dim); display:block; margin-top:3px; }
+  /* Bigger than the lines it sits between: with the label gone the counts have
+     to carry themselves. One step under the accuracy and balance above.
+     Declared after .who .sub — same specificity, so source order wins. */
+  .who .wlp { font-size:var(--fs-body); }
+  /* Weight on the counts only, so the slashes stay light. */
+  .who .wlp span { font-weight:700; }
+  /* Banded by what the play costs, not by the percentage: a 90% player who
+     blows a unit on his one mistake is the worse player. */
+  .cost-low  { color:var(--good); }
+  .cost-mid  { color:var(--warn); }
+  .cost-high { color:var(--bad); }
+
+  /* ---- recent hands ---- */
+  #histpanel { display:none; }
+  #histhead { display:flex; align-items:baseline; gap:12px; margin-bottom:10px; }
+  #histhead .t { font-size:var(--fs-caption); text-transform:uppercase; letter-spacing:.1em;
+                 color:var(--dim); white-space:nowrap; }
+  #hist { display:grid; gap:6px; }
+  /* minmax(0,…) on the second column so a full table wraps inside its own cell
+     rather than widening the row. */
+  /* FIXED, not auto: sized to auto it took the width of that round's own hand,
+     so the seat columns stopped lining up between rounds — which is the whole
+     point of the grid to their right. 112px clears a five-card fan. */
+  .hround { display:grid; grid-template-columns:112px minmax(0,1fr); gap:12px;
+            align-items:start; background:#0e1119; border:1px solid var(--line);
+            border-radius:8px; padding:6px 10px; }
+  .hround .hd { font-size:var(--fs-caption); white-space:nowrap; }
+  .hround .hd .hdt { font-weight:700; display:block; margin-bottom:3px; }
+  .hbust { color:var(--bad); font-weight:700; }
+  /* A fixed seven-column grid, not a flex row, so seat A sits in the same
+     column every round and the strip reads down as well as across. */
+  .hseats { display:grid; grid-template-columns:repeat(7,minmax(0,1fr)); gap:5px; }
+  /* A chair that sat the round out still holds its column, so the ones that
+     played never shift under each other. */
+  .hseat.hempty { border-style:dashed; opacity:.3; }
+  .hseat { font-size:var(--fs-micro); border:1px solid var(--line); border-radius:6px;
+           padding:3px 6px 4px; white-space:nowrap; color:var(--dim); }
+  /* Who, and what their hands made. A split has two rows of cards but one
+     chip colour, since the money settles for the seat. */
+  .hseat .hsq { font-weight:700; display:flex;
+                justify-content:space-between; gap:6px; margin-bottom:2px; }
+  /* The name gives first when the column is narrow; the total never does. No
+     text-overflow: the name is capped in JS, and the browser's ellipsis is a
+     different mark from the dots that cap uses. */
+  .hseat .hsq .hsn { opacity:.75; min-width:0; overflow:hidden; white-space:nowrap; }
+  .hseat .hsq .hst { flex:none; }
+
+  /* Each card overlaps the one before it; the corner index means the strip it
+     keeps still carries a rank and a pip. */
+  .hhand { display:flex; align-items:center; }
+  .hhand + .hhand { margin-top:3px; }
+  /* Their own box, so the LAST CARD is a :last-child. Without it the total's
+     span held that slot and every hand's final card kept the overlap. */
+  .hfan { display:flex; align-items:center; flex-wrap:wrap; }
+  /* The felt's index at recap size, left corners only: at 24px wide the two
+     pairs meet in the middle, and the left pair is the half that survives
+     being covered anyway. */
+  .hcard {
+    position:relative;
+    width:24px; height:31px; border-radius:3px; background:#f2f5fa;
+    border:1px solid #7e8899; font-weight:800; line-height:1; flex:none;
+    margin-left:-6px;
+  }
+  /* Later cards paint over earlier ones in DOM order, which is dealt order. */
+  .hcard:first-child { margin-left:0; }
+  .hcard .hcr, .hcard .hcs { position:absolute; left:2px; font-size:var(--fs-caption); }
+  .hcard .hcr { top:2px; }
+  /* Suit pips need a font with the glyphs; the monospace stack draws specks. */
+  .hcard .hcs { bottom:2px; font-family:"Segoe UI Symbol","Segoe UI",sans-serif; }
+  .hcard.red { color:#c8102e; }
+  .hcard.black { color:#0d1117; }
+  .hcard.hidden {
+    display:flex; align-items:center; justify-content:center; padding-right:6px;
+    background:#1b2130; border-color:var(--line); color:var(--dim);
+  }
+  .hcard.hidden:last-child { padding-right:0; }
+  .hcard.hidden .hcr { position:static; }
+  /* The three colours the felt outlines a settled seat with, so a row here
+     reads the way the table looked at the time. */
+  .hseat.won  { border-color:#1c5b33; color:var(--good); }
+  .hseat.lost { border-color:#6b2027; color:var(--bad); }
+  .hseat.drew { border-color:var(--line); color:var(--dim); }
+  .hseat.mine { background:#12203a; }
+
+  /* ---- basic strategy ---- */
+  /* minmax(0,…) because a table's intrinsic width is the sum of its columns and
+     a plain 1fr refuses to go below it, which pushed the third chart off. */
+  #chartshead { display:flex; align-items:baseline; gap:12px; margin-bottom:10px; }
+  #chartshead .t { font-size:var(--fs-caption); text-transform:uppercase; letter-spacing:.1em;
+                   color:var(--dim); white-space:nowrap; }
+  #charts { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; }
+  .chart .ct { font-size:var(--fs-caption); color:var(--ink); font-weight:700; margin-bottom:5px; }
+  /* fixed so the ten upcard columns are equal — auto gave "10" more width and
+     the grid stopped reading as a grid. collapse keeps the 1px rules 1px. */
+  .chart table { border-collapse:collapse; width:100%; table-layout:fixed; }
+  .chart th, .chart td { text-align:center; font-size:var(--fs-micro); line-height:1.5;
+                         border:1px solid var(--bg); padding:0; }
+  .chart th { color:var(--dim); font-weight:700; }
+  /* Text, not a cell you read a decision out of: wider, and no fill. */
+  .chart col.lbl { width:22%; }
+  .chart td.k { color:var(--ink); font-weight:700; background:#0e1119; }
+  .chart .ch { font-size:var(--fs-micro); color:var(--dim); }
+  /* The playing box's four colours, so a D on the chart and a DOUBLE on the
+     felt are the same amber and you never have to translate. */
+  .c-H { background:var(--cool);  color:#04101d; font-weight:700; }
+  .c-S { background:var(--good);  color:#04140a; font-weight:700; }
+  .c-D { background:var(--warn);  color:#181000; font-weight:700; }
+  .c-P { background:#8a5cd6;      color:#0f0518; font-weight:700; }
+
+  /* Scaled to ~70%: reference rather than something you act on, so it earns
+     less of the page. Type, padding, gap and radius take the same factor. */
+  #ranks { margin-top:14px; display:grid; grid-template-columns:repeat(13,1fr); gap:4px; }
+  .rank { background:#0e1119; border:1px solid var(--line); border-radius:6px; padding:7px 3px; text-align:center; }
+  .rank .r { font-size:var(--fs-body); font-weight:800; }
+  .rank .n { font-size:var(--fs-stat-sm); font-weight:700; margin-top:1px; }
+  #countdown { font-size:var(--fs-stat); font-weight:700; }
+  .muted { color:var(--dim); }
+  #stale { display:none; background:var(--bad); color:#fff; padding:6px 12px; border-radius:6px; font-weight:700; }
+
+  /* ---- felt ---- */
+  #flip {
+    grid-column:7; grid-row:1; justify-self:end; align-self:start;
+    background:#1b2130; color:var(--ink); border:1px solid var(--line);
+    border-radius:6px; padding:5px 12px; font:inherit; font-size:var(--fs-caption); cursor:pointer;
+  }
+  #flip:hover { border-color:var(--cool); }
+  /* Middle column of the same 7-wide grid, so the dealer lines up over the
+     seats instead of floating on its own scale. */
+  /* minmax(0,…) rather than a bare 1fr: a grid item's automatic minimum is its
+     content, so a plain 1fr track GROWS to fit a long nickname — which
+     stretched one seat to 395px and squeezed the rest. */
+  #dealerrow, #seatrow { display:grid; grid-template-columns:repeat(7,minmax(0,1fr)); gap:8px; }
+  #dealerrow { margin-bottom:8px; }
+  /* Half again as wide as a seat, centred on its own column: the dealer draws
+     until 17, and a six-card hand wrapped onto a second row, pushing the felt
+     down a line mid-round. The extra width spills into the empty tracks. */
+  #spot-DEALER { grid-column:4; width:150%; justify-self:center; }
+  /* grid-row is explicit because auto-placement is sparse and would drop a
+     later item into a row of its own. The margin is the half-track the dealer
+     box spills into this column, as a share rather than a pixel count; the
+     sixth track is spent because the offset alone wrapped "busts 41.2%". */
+  #dealerstats { grid-column:5 / span 2; grid-row:1; align-self:center;
+                 text-align:left; margin-left:12.5%; }
+  #dealer { font-size:var(--fs-stat-lg); font-weight:700; line-height:1.1; }
+  #insurance { font-size:var(--fs-body); margin-top:4px; }
+  /* On the base rather than each status class: those change border-COLOUR
+     only, so the width never changes as a hand resolves and the cards inside
+     never shift. */
+  .spot { background:#0e1119; border:2px solid var(--line); border-radius:10px; padding:8px; }
+  .spot.empty { opacity:.4; border-style:dashed; }
+  /* Dashed while the hand is still being played, solid once it resolves, so
+     the outline says whether anything is still to come as well as who is up.
+
+     An OUTLINE, not a dashed border: browsers derive dash length from the
+     line's width, and a 1px border comes out as a dotted stipple. An outline
+     can be thick without costing layout. offset:-1px sits it where the border
+     is, and the border goes transparent so there is only one line. */
+  .spot.dealing { border-color:transparent;
+                  outline:2px dashed var(--warn); outline-offset:-1px;
+                  box-shadow:0 0 0 2px rgba(224,161,42,.22); }
+  .spot.mine { border-color:var(--cool); }
+  /* .mine is declared after .dealing, so its solid blue border overrode the
+     transparent one .dealing lays down and you got both lines at once. The
+     pair gets its own rule instead: the dashes stay, in blue.
+
+     So blue solid is "your seat" and blue dashed is "your seat, your turn" —
+     the same distinction the rest of the felt uses, and amber then only ever
+     marks somebody else. */
+  .spot.mine.dealing { border-color:transparent;
+                       outline-color:var(--cool);
+                       box-shadow:0 0 0 2px rgba(74,144,217,.22); }
+  /* One vocabulary, four colours: amber for whose turn it is, red for over 21,
+     then green or red for how the money landed. After .mine, so an outcome
+     outranks the blue seat marker; renderFelt decides which is asked for. */
+  .spot.busted, .spot.lost { border-color:var(--bad); box-shadow:0 0 0 2px rgba(226,68,75,.22); }
+  .spot.won { border-color:var(--good); box-shadow:0 0 0 2px rgba(37,194,110,.22); }
+  /* Marked but not coloured for or against — the outcome that matters least,
+     but present, so a push is distinguishable from a hand still waiting. */
+  .spot.drew { border-color:var(--dim); box-shadow:0 0 0 2px rgba(136,146,166,.20); }
+  .spot .lbl { display:flex; justify-content:space-between; gap:8px;
+               font-size:var(--fs-caption); color:var(--dim); letter-spacing:.12em; }
+  /* .id is what gives when the box is narrow: min-width:0 lets it shrink below
+     its content, and flex:none on .sc means the total never truncates. */
+  .spot .lbl .id { display:flex; align-items:baseline; gap:5px; min-width:0; }
+  /* letter-spacing:0 — .lbl spaces out the seat letters and DEALER, which is
+     wrong for a nickname. The name is also the only part that truncates, so a
+     long one loses its tail instead of pushing the score off the edge. */
+  .spot .lbl .nm { color:var(--ink); letter-spacing:0; min-width:0;
+                   white-space:nowrap; overflow:hidden; }
+  .spot .lbl .sc { flex:none; }
+  .spot .lbl .sc { color:var(--ink); font-weight:700; letter-spacing:0; }
+  /* A natural pays differently, so it gets the one treatment nothing else on
+     the page has: a gradient clipped to the glyphs — which needs a transparent
+     colour to show through — and slid across to read as a sheen. drop-shadow
+     rather than text-shadow, which would be cast by the transparent fill. */
+  .spot .lbl .sc.bj, .hdv.bj {
+    font-weight:800; letter-spacing:.04em;
+    background-image:var(--gold);
+    background-size:300% 100%;
+    -webkit-background-clip:text; background-clip:text;
+    color:transparent;
+    filter:drop-shadow(0 0 4px rgba(255,208,80,.45));
+    animation:bjshine 2.6s linear infinite;
+  }
+  @keyframes bjshine { from { background-position:180% 0; } to { background-position:-80% 0; } }
+  /* The sheen is decoration, the word is the information: reduced motion keeps
+     the gold and loses the travel. */
+  @media (prefers-reduced-motion: reduce) {
+    .spot .lbl .sc.bj, .hdv.bj, .p-bj, .mv.p-bj .mva {
+      animation:none; background-position:50% 0;
+    }
+  }
+  /* "empty" goes through the same slot a total does, but it is a placeholder —
+     bold gave an empty chair the same weight as a 21. */
+  .spot.empty .lbl .sc { font-weight:400; }
+  /* Split hands stay visually separate — a 12 made of two hands is not a 12. */
+  /* Wraps, so a split too wide for the seat drops its second hand onto a new
+     line with both hands intact. Before this the wrapping happened INSIDE a
+     hand: .hand was shrinkable and its min-content width is a single card, so
+     a narrow seat stacked each half's cards vertically. */
+  .cards { display:flex; flex-wrap:wrap; gap:12px; margin-top:6px; min-height:47px;
+           align-items:flex-start; align-content:flex-start; }
+  /* gap:0 — the cards are fanned with a negative margin, and a gap would just
+     be subtracted from the overlap.
+
+     flex:none keeps a hand at its natural width, so it is never squeezed by
+     the other half of a split; max-width:100% still lets ONE hand long enough
+     to overrun the seat wrap internally. Between hands first, inside a hand
+     only when one cannot fit on its own. */
+  .hand { display:flex; gap:0; flex-wrap:wrap; border-radius:6px;
+          flex:none; max-width:100%; }
+  /* The live half means what the dashed seat box means, so it is drawn the
+     same way. An outline because only an outline can be dashed. */
+  .hand.live { outline:2px dashed var(--warn); outline-offset:1px; }
+  /* Same property as .live and after it, so the ring on a split's dead half
+     turns red rather than staying amber in the frame where the feed still has
+     the busted hand marked active. Solid: a bust cannot change. */
+  .hand.busted { outline:2px solid var(--bad); outline-offset:1px; }
+  /* Once the money lands, each half says how IT went, in the same three
+     colours the seat box uses. The seat box still shows the sum: one half won
+     and one lost is slate outside and green-and-red inside. After .busted, so
+     a settled loss reads the same whether the hand busted or was beaten. */
+  .hand.won  { outline:2px solid var(--good); outline-offset:1px; }
+  .hand.lost { outline:2px solid var(--bad);  outline-offset:1px; }
+  .hand.drew { outline:2px solid var(--dim);  outline-offset:1px; }
+  /* Indexed like a real deck: rank top-left and bottom-right, pip top-right
+     and bottom-left. A card covered by the next one keeps its left edge, and
+     that edge alone carries a full rank and a full pip — so nothing needs
+     centring in a strip and there is no last-card exception to get wrong.
+
+     The pull is margin-RIGHT: each card drags the NEXT one over itself. With
+     margin-left the negative pull sat on the card that began each flex line,
+     so a wrapped hand started its second row 10px out of line. */
+  .card {
+    position:relative;
+    width:33px; height:47px; border-radius:6px; background:#f2f5fa;
+    border:1px solid #7e8899; font-weight:800; line-height:1; flex:none;
+    margin-right:-12px;
+  }
+  .card:last-child { margin-right:0; }
+  /* The lower corners are the same two strings again, so they come from data-
+     attributes rather than two more nodes on every card on the table. */
+  .card .cr, .card .cs, .card::before, .card::after { position:absolute; }
+  .card .cr    { top:3px;    left:2px;  font-size:var(--fs-body); }
+  /* The right-hand corners belong to the card nothing covers. On a covered card
+     they sit under its neighbour except for the two or three pixels clearing
+     the seam, which reads as a stray mark rather than an index. */
+  .card .cs, .card::after { display:none; }
+  .card:last-child .cs { display:block; }
+  .card:last-child::after { display:block; }
+  .card::after { bottom:3px; right:2px; font-size:var(--fs-body); content:attr(data-r); }
+  /* Suit pips need a font with the glyphs; the monospace stack draws specks. */
+  .card .cs, .card::before {
+    font-size:var(--fs-caption); font-family:"Segoe UI Symbol","Segoe UI",sans-serif;
+  }
+  .card .cs     { top:4px;    right:2px; }
+  .card::before { bottom:4px; left:2px;  content:attr(data-s); }
+  .card.red { color:#c8102e; }
+  .card.black { color:#0d1117; }
+  /* Nothing to index — one mark, centred in the strip the card keeps, the one
+     place the old padding trick is still right. */
+  .card.hidden {
+    display:flex; align-items:center; justify-content:center; padding-right:12px;
+    background:#1b2130; border-color:var(--line); color:var(--dim);
+  }
+  .card.hidden:last-child { padding-right:0; }
+  .card.hidden .cr { position:static; }
+
+  /* The wrapper is the grid item, so the spot keeps its own borders and outline
+     states without the move box inheriting any of them. */
+  .seat { display:flex; flex-direction:column; gap:6px; min-width:0; }
+
+  /* The best play for that seat, above the cards rather than inside the spot —
+     the spot's border says how the hand went, and a verdict living inside it
+     read as part of that. Always present, so a seat waiting on its first
+     answer holds the same height as one that has it.
+
+     Two lines: the move, then the margin and what it is measured against on
+     one row. A seat with nothing left to decide centres its one word. */
+  /* One box for every seat: slate ground, slate border. Seven filled boxes in
+     seven colours made the row the loudest thing on the page, so the box is
+     furniture and the WORD carries the colour. */
+  .mv { min-height:36px; border-radius:6px; padding:4px 5px;
+        display:flex; flex-direction:column; align-items:center;
+        justify-content:center; gap:1px; text-align:center; }
+  /* `.seat .mv` on purpose: the p-* classes are shared with the big readout,
+     where they ARE the fill, so a bare `.mv` ties them on specificity and
+     loses on source order — which put the loud fill straight back. */
+  .seat .mv { background:#1b2130; box-shadow:inset 0 0 0 1px var(--line);
+              color:var(--dim); }
+  .mv .mva { font-size:var(--fs-caption); font-weight:800; letter-spacing:.06em;
+             line-height:1.15; color:var(--ink); }
+  /* The one coloured thing in the box, in the big verdict's five hues. */
+  .mv.p-hit    .mva { color:#79b0e4; }
+  .mv.p-stand  .mva { color:#5cc98c; }
+  .mv.p-double .mva { color:#dcaa4a; }
+  .mv.p-split  .mva { color:#a687e0; }
+  .mv.p-bust .mva,
+  .mv.p-surrender .mva { color:#e0757b; }
+  .mv.p-thinking .mva { color:var(--dim); }
+  .mv.you .mva { color:var(--cool); }
+  /* Quieter than the verdict: it qualifies the move rather than competing. */
+  .mv .mvb { font-size:var(--fs-micro); font-weight:700; line-height:1.15; }
+  .mv .mvc { font-size:var(--fs-micro); font-weight:400; line-height:1.15; opacity:.85;
+             letter-spacing:0; min-width:0; overflow:hidden; white-space:nowrap;
+             text-overflow:ellipsis; }
+  /* Narrow seats lose the tail of "vs SPLIT" before they lose the number,
+     which is the half that carries the size of the decision. */
+  .mv .mvsub { display:flex; align-items:baseline; justify-content:center;
+               gap:4px; max-width:100%; min-width:0; }
+  /* Yours is the large one above; two answers in two places invites reading
+     the wrong one. */
+  /* Nothing to say yet. An outline rather than a fill, so the box holds its
+     place without reading as a verdict. */
+  .mv.none { background:transparent; box-shadow:inset 0 0 0 1px var(--line); }
+
+  /* ---- playing advice ---- */
+  #playrow { display:flex; align-items:center; gap:18px; margin-bottom:12px;
+             padding:10px 12px; background:#0e1119; border:1px solid var(--line);
+             border-radius:10px; }
+  #playaction { font-size:var(--fs-display); font-weight:800; letter-spacing:.06em;
+                padding:8px 20px; border-radius:8px; min-width:190px; text-align:center;
+                white-space:nowrap; }
+  .p-hit       { background:var(--cool); color:#04101d; }
+  .p-stand     { background:var(--good); color:#04140a; }
+  .p-double    { background:var(--warn); color:#181000; }
+  .p-split     { background:#8a5cd6; color:#0f0518; }
+  .p-surrender { background:var(--bad);  color:#1a0304; }
+  .p-bust      { background:var(--bad);  color:#1a0304; }
+  .p-thinking  { background:#1b2130; color:var(--dim); }
+  /* A natural is not a decision, so it does not take a decision's colour. A
+     ring instead of a fill: the gradient has to BE the background to clip to
+     text, and an outline reads as a result rather than an instruction. */
+  .p-bj {
+    background-image:var(--gold);
+    background-size:300% 100%;
+    -webkit-background-clip:text; background-clip:text;
+    color:transparent;
+    box-shadow:inset 0 0 0 1px rgba(255,208,80,.5), inset 0 0 20px rgba(255,208,80,.09);
+    letter-spacing:.09em;
+    filter:drop-shadow(0 0 5px rgba(255,208,80,.35));
+    animation:bjshine 2.6s linear infinite;
+  }
+  /* The seat boxes hold their word in a span, so the gradient is declared there
+     too rather than relying on a parent's clip reaching descendants. */
+  .mv.p-bj {
+    background:#1b2130; box-shadow:inset 0 0 0 1px var(--line);
+    color:var(--dim); filter:none; animation:none; letter-spacing:normal;
+  }
+  .mv.p-bj .mva {
+    background-image:var(--gold); background-size:300% 100%;
+    -webkit-background-clip:text; background-clip:text; color:transparent;
+    filter:drop-shadow(0 0 4px rgba(255,208,80,.35));
+    animation:bjshine 2.6s linear infinite;
+  }
+  #playwhy { font-size:var(--fs-body); }
+  #playev { display:flex; gap:14px; flex-wrap:wrap; margin-top:6px;
+            font-size:var(--fs-caption); color:var(--dim); }
+  .evitem.best { color:var(--ink); font-weight:700; }
+  .q { color:var(--warn); font-weight:700; cursor:help; }
+
+</style>
+</head>
+<body>
+
+<div class="panel capped" id="head">
+  <div>
+    <div id="action" class="a-OUT">—</div>
+    <div id="why">connecting…</div>
+    <div id="stance" class="muted"></div>
+  </div>
+  <div class="metrics">
+    <div class="metric"><div class="k">edge</div><div class="v" id="adv">—</div><div class="s" id="sitbar">—</div></div>
+    <div class="metric"><div class="k">bet</div><div class="v" id="bet">—</div><div class="s" id="betchips">—</div></div>
+    <div class="metric"><div class="k">bet window</div><div class="v" id="countdown">—</div></div>
+  </div>
+  <div id="trust">
+    <span class="badge t-no" id="trustbadge">UNKNOWN</span>
+    <span id="cutwarn">CUT CARD OUT</span>
+    <span id="trustwhy" class="muted"></span>
+    <span id="stale">DISCONNECTED FROM ADVISOR</span>
+    <button id="untrust" title="Use when you saw something the feed did not report — a misdeal, a misread card, a hand played off-camera.">mark shoe untrusted</button>
+  </div>
+</div>
+
+<div class="panel capped" id="feltpanel">
+  <div id="playrow" style="display:none">
+    <div id="playaction">—</div>
+    <div>
+      <div id="playwhy" class="muted"></div>
+      <div id="playev"></div>
+    </div>
+  </div>
+  <!-- In the dealer row itself, so it lines up with the top of the dealer's
+       spot without a magic offset. Column 7 is the rightmost. -->
+  <div id="dealerrow">
+    <div id="dealerstats">
+      <div id="dealer">—</div>
+      <div id="insurance">—</div>
+    </div>
+    <button id="flip" title="Seats are shown in deal order. A is first base, on your right, so the row reads right to left by default.">flip order</button>
+  </div>
+  <div id="seatrow"></div>
+</div>
+
+<div class="panel capped">
+  <div id="shoerow">
+    <div id="tcstats">
+      <div class="k muted" style="font-size:var(--fs-caption);letter-spacing:.1em">TRUE COUNT</div>
+      <div style="font-size:var(--fs-stat);font-weight:700" id="tc">—</div>
+      <div class="muted" style="font-size:var(--fs-caption)" id="rc">—</div>
+    </div>
+    <div id="barblock">
+      <div id="bar"><div id="fill"></div><div id="cut"></div></div>
+      <div class="sub">
+        <span id="dealt">—</span>
+        <span id="decksleft">—</span>
+        <span id="rounds">—</span>
+        <span id="phase">—</span>
+      </div>
+    </div>
+  </div>
+  <div id="ranks"></div>
+</div>
+
+<!-- Spectating only, and for the case it is named after: no seat free, but the
+     shoe is worth money. Sized for the players' own mistakes AND for the
+     correlation between seats in one round. -->
+<div class="panel capped" id="behindpanel">
+  <div id="behindhead">
+    <span class="t">bet behind</span>
+    <span class="muted" id="behindnote" style="font-size:var(--fs-caption)"></span>
+    <span id="behindtotal"></span>
+  </div>
+  <div id="behindseats"></div>
+  <div id="behindnone"></div>
+</div>
+
+<!-- Spectating only: while you are seated the server does not send this and the
+     panel stays hidden. -->
+<div class="panel capped" id="playerspanel">
+  <div id="playershead">
+    <span class="t">how the table is playing</span>
+    <span class="muted" id="playersnote" style="font-size:var(--fs-caption)"></span>
+    <button id="playersort" title="Cycle the order: as they sit at the table, or most trustworthy first."></button>
+  </div>
+  <div id="players"></div>
+</div>
+
+<!-- Server-side (history.js) rather than accumulated in the page, so it
+     survives a reload and is built from the same roundNet the felt's outline
+     uses — the recap cannot disagree with what was on screen. -->
+<div class="panel capped" id="histpanel">
+  <div id="histhead">
+    <span class="t">recent hands</span>
+    <span class="muted" id="histnote" style="font-size:var(--fs-caption)"></span>
+  </div>
+  <div id="hist"></div>
+</div>
+
+<!-- Reference, and static: the chart for THIS table's rules, not the
+     count-adjusted answer. The felt above deviates off the live shoe; this is
+     what you fall back to when it cannot. -->
+<div class="panel capped" id="chartspanel">
+  <div id="chartshead">
+    <span class="t">basic strategy</span>
+  </div>
+  <div id="charts"></div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+// Writing textContent or innerHTML replaces the node's children, and replacing
+// a node mid-selection collapses the selection. The feed pushes several frames
+// a second while most of the page is identical from one to the next, so an
+// unguarded repaint made text here almost impossible to select. These write
+// only on a real change.
+//
+// Both take an id or an element, since the felt addresses spots by computed id.
+function el(node) { return typeof node === 'string' ? $(node) : node; }
+function setText(node, s) {
+  const n = el(node);
+  if (n && n.textContent !== s) n.textContent = s;
+  return n;
+}
+function setHTML(node, s) {
+  const n = el(node);
+  if (n && n.innerHTML !== s) n.innerHTML = s;
+  return n;
+}
+const RANKS = ['A','2','3','4','5','6','7','8','9','T','J','Q','K'];
+// The feed calls a ten "T". Nothing but the screen should see that: on a table
+// it reads 10.
+const rankLabel = (r) => (r === 'T' ? '10' : r);
+// Tolerant on purpose: one missing field should degrade one readout, not throw
+// out of render() and leave the dashboard frozen on stale cards.
+const fmt = (n) => (n == null ? "—" : n.toLocaleString());
+const pct = (x) => (x >= 0 ? '+' : '') + (x * 100).toFixed(2) + '%';
+
+for (const r of RANKS) {
+  const d = document.createElement('div');
+  d.className = 'rank';
+  d.innerHTML = `<div class="r">${rankLabel(r)}</div><div class="n" id="n-${r}">—</div>`;
+  $('ranks').appendChild(d);
+}
+
+// ---- basic strategy ------------------------------------------------------
+// Every cell came out of vendor/blackjack-engine.ts against a fresh 8-deck
+// shoe under config.rules, not out of a published chart — no DAS and no peek
+// under a ten in particular move cells a generic chart gets wrong. If the
+// rules change, regenerate; do not patch a cell by hand.
+//
+// D and Ds are one action with two fallbacks, and the distinction is not
+// cosmetic: double is unavailable on more than two cards, and what you do
+// instead is hit for every D on the page except soft 18, where it is stand.
+const CHART_UPS = ['2','3','4','5','6','7','8','9','10','A'];
+const CHARTS = [
+  ['hard totals', [
+    ['5–8', 'HHHHHHHHHH'],
+    ['9',   'HDDDDHHHHH'],
+    ['10',  'DDDDDDDDHH'],
+    ['11',  'DDDDDDDDHH'],
+    ['12',  'HHSSSHHHHH'],
+    ['13',  'SSSSSHHHHH'],
+    ['14',  'SSSSSHHHHH'],
+    ['15',  'SSSSSHHHHH'],
+    ['16',  'SSSSSHHHHH'],
+    ['17',  'SSSSSSSSSS'],
+  ]],
+  ['soft totals', [
+    ['A,2',  'HHHDDHHHHH'],
+    ['A,3',  'HHHDDHHHHH'],
+    ['A,4',  'HHDDDHHHHH'],
+    ['A,5',  'HHDDDHHHHH'],
+    ['A,6',  'HDDDDHHHHH'],
+    // The only row on the page where a failed double stands rather than hits.
+    ['A,7',  'S****SSHHH'],
+    ['A,8',  'SSSSSSSSSS'],
+    ['A,9',  'SSSSSSSSSS'],
+  ]],
+  ['pairs', [
+    // No DAS is what keeps 2,2 3,3 and 6,6 off the low upcards and 4,4 off
+    // entirely: a split you cannot double on is worth less than the hand.
+    ['2,2',   'HHPPPPHHHH'],
+    ['3,3',   'HHPPPPHHHH'],
+    ['4,4',   'HHHHHHHHHH'],
+    ['5,5',   'DDDDDDDDHH'],
+    ['6,6',   'HPPPPHHHHH'],
+    ['7,7',   'PPPPPPHHHH'],
+    // Split against the ace, which the dealer DOES peek under; hit against the
+    // ten, which is not. Same pair, two different rules.
+    ['8,8',   'PPPPPPPPHP'],
+    ['9,9',   'PPPPPSPPSS'],
+    ['10,10', 'SSSSSSSSSS'],
+    ['A,A',   'PPPPPPPPPP'],
+  ]],
+];
+
+// '*' is Ds — two characters in one cell, so it cannot be its own letter in a
+// string indexed one character per upcard.
+const cellLabel = (c) => (c === '*' ? 'Ds' : c);
+const cellClass = (c) => 'c-' + (c === '*' ? 'D' : c);
+
+for (const [title, rows] of CHARTS) {
+  const head = CHART_UPS.map((u) => `<th>${u}</th>`).join('');
+  // Drawn highest total first. The tables are kept ascending because that is
+  // the order they were generated and checked in, so the literal stays
+  // comparable to a reference. slice() first: reverse() is in-place.
+  const body = rows.slice().reverse().map(([label, cells]) =>
+    `<tr><td class="k">${label}</td>` +
+    [...cells].map((c) => `<td class="${cellClass(c)}">${cellLabel(c)}</td>`).join('') +
+    '</tr>').join('');
+  const div = document.createElement('div');
+  div.className = 'chart';
+  div.innerHTML = `<div class="ct">${title}</div>` +
+    `<table><colgroup><col class="lbl">` +
+    CHART_UPS.map(() => '<col>').join('') + `</colgroup>` +
+    `<tr><th class="ch">dealer</th>${head}</tr>${body}</table>`;
+  $('charts').appendChild(div);
+}
+
+// ---- felt ----------------------------------------------------------------
+// Seats in deal order (A first base, then B..G) — what the feed's own
+// dealingSequence walks. But dealing runs right to left from where you sit, so
+// on screen A belongs on the RIGHT, which is what the default does. Anything
+// else puts every card in the wrong box; the toggle is for the other side.
+const SEATS = ['A','B','C','D','E','F','G'];
+const SUITS = { S:'♠', H:'♥', D:'♦', C:'♣' };
+let flipped = localStorage.getItem('feltFlip') !== '0';
+// Kept so the flip button can repaint immediately, and declared with the flip
+// state rather than next to its writer, out of the temporal dead zone.
+let lastTable = null;
+
+// "**" must render as a card-shaped unknown rather than nothing: an omitted
+// card looks identical to one we failed to read, and telling those apart is
+// the point of this panel.
+function cardHTML(code) {
+  const c = String(code || '');
+  const suit = SUITS[c.slice(-1)];
+  if (!suit || c.includes('*')) return '<div class="card hidden"><div class="cr">?</div></div>';
+  const rank = c.slice(0, -1);
+  const red = c.endsWith('H') || c.endsWith('D');
+  const r = rankLabel(rank);
+  // data- rather than two more nodes: the lower corners repeat the same rank
+  // and pip, at seven seats, four times a second.
+  return `<div class="card ${red ? 'red' : 'black'}" data-r="${r}" data-s="${suit}">` +
+         `<div class="cr">${r}</div>` +
+         `<div class="cs">${suit}</div></div>`;
+}
+
+// `withMove` gates the box above the seat. The dealer takes no advice.
+function spotHTML(id, label, withMove = false) {
+  const spot = `<div class="spot empty" id="spot-${id}">` +
+         `<div class="lbl"><span class="id"><span id="l-${id}">${label}</span>` +
+         `<span class="nm" id="nm-${id}"></span></span>` +
+         `<span class="sc" id="v-${id}"></span></div>` +
+         `<div class="cards" id="c-${id}"></div></div>`;
+  if (!withMove) return spot;
+  // The wrapper is what the grid places and what the flip reorders.
+  return `<div class="seat" id="seat-${id}">` +
+         `<div class="mv" id="mv-${id}"></div>${spot}</div>`;
+}
+
+$('dealerrow').insertAdjacentHTML('afterbegin', spotHTML('DEALER', 'DEALER'));
+$('seatrow').innerHTML = SEATS.map((s) => spotHTML(s, s, true)).join('');
+
+function applyFlip() {
+  // The wrapper, not the spot: the spot is no longer the grid item.
+  SEATS.forEach((s, i) => { $('seat-' + s).style.order = flipped ? SEATS.length - i : i; });
+}
+$('flip').onclick = () => {
+  flipped = !flipped;
+  localStorage.setItem('feltFlip', flipped ? '1' : '0');
+  applyFlip();
+  // Split hands mirror with the row, so the felt is repainted rather than just
+  // reordered — otherwise the change lands a tick late.
+  renderFelt(lastTable);
+  renderPlayers(lastPlayers);   // "as seated" follows the felt
+  renderHistory(lastHistory);   // and so does the recap
+};
+applyFlip();
+
+// `name` is appended rather than placed beside `label`, so the dealer's call —
+// no name, no hands — is unchanged.
+function paintSpot(id, label, cardGroups, score, cls, liveHand = null, handMarks = [], name = '',
+                   move = { text: '', cls: 'none' }) {
+  $('spot-' + id).className = 'spot' + cls;
+  setText($('l-' + id), label);
+  // "nm-", not "n-": the rank grid owns n-<RANK>, and its ranks and the seat
+  // letters overlap on A. Seat A's box is earlier in the document, so
+  // getElementById('n-A') handed BOTH writers the same element. The score is
+  // already known here, so the name is clipped against it.
+  setName($('nm-' + id), name, feltNameMax(score));
+  const mv = $('mv-' + id);
+  if (mv) {
+    // Elements rather than one string so each line carries its own size;
+    // setHTML still skips the write when nothing changed.
+    setHTML(mv, move.text
+      ? `<span class="mva">${move.text}</span>` +
+        (move.margin || move.alt
+          ? `<span class="mvsub">` +
+            (move.margin ? `<span class="mvb">${move.margin}</span>` : '') +
+            (move.alt ? `<span class="mvc">${move.alt}</span>` : '') +
+            `</span>`
+          : '')
+      : '');
+    mv.className = 'mv ' + move.cls;
+  }
+  setHTML($('c-' + id), cardGroups
+    .map((h, i) => `<div class="hand${i === liveHand ? ' live' : ''}` +
+                   `${handMarks[i] ? ' ' + handMarks[i] : ''}">` +
+                   `${h.map(cardHTML).join('')}</div>`).join(''));
+  setText($('v-' + id), score || '');
+  // A class, not a colour written by the painter, so the animation survives the
+  // frames where setText finds the text unchanged and does nothing.
+  $('v-' + id).classList.toggle('bj', score === 'BJ');
+}
+
+// A soft hand is worth two things at once and the low one is what makes it safe
+// to hit, so both are shown.
+//
+// From the cards, not the feed: its `soft` flag disagreed with the arithmetic
+// on 154 of 702 ace hands in one capture — "7C AH" as a hard 18 — while the
+// cards were right every time. Face-down cards are skipped, so a lone dealer
+// ace reads 1/11.
+const TEN_RANKS = ['T', 'J', 'Q', 'K'];
+function handValue(cards) {
+  let hard = 0;
+  let aces = 0;
+  let shown = 0;
+  for (const c of cards || []) {
+    const s = String(c);
+    if (s.includes('*')) continue;
+    shown += 1;
+    const r = s.slice(0, -1);
+    if (r === 'A') { aces += 1; hard += 1; }
+    else hard += TEN_RANKS.includes(r) ? 10 : Number(r) || 0;
+  }
+  return { hard, aces, shown };
+}
+
+// `allowBlackjack` answers "could this hand be a natural at all". A ten on a
+// split ace is a 21 and pays 1:1, so renderFelt passes false for every hand of
+// a split; the dealer, who cannot split, takes the default.
+//
+// Checking the array length as well as `shown` keeps a three-card hand whose
+// newest card is still streaming as "**" from reading as a natural — shown
+// would be 2 there too.
+function isNatural(cards) {
+  const { hard, aces, shown } = handValue(cards);
+  return aces === 1 && hard === 11 && shown === 2 && (cards || []).length === 2;
+}
+
+function totalText(cards, allowBlackjack = true) {
+  const { hard, aces, shown } = handValue(cards);
+  if (!shown) return '';
+  if (allowBlackjack && isNatural(cards)) return 'BJ';
+  return aces && hard + 10 <= 21 ? `${hard}/${hard + 10}` : String(hard);
+}
+
+// Every ace already counts 1 in `hard`, so there is no soft total to fall back
+// on past 21. Skipping a face-down card only ever lowers a total, so this
+// cannot call a live hand dead.
+function isBust(cards) {
+  const { hard, shown } = handValue(cards);
+  return shown > 0 && hard > 21;
+}
+
+// null is a hand that has not settled, and gets no mark at all.
+const OUTCOME_CLASS = { win: ' won', loss: ' lost', push: ' drew' };
+
+function renderFelt(t) {
+  if (!t) return;
+  lastTable = t;
+  for (const s of t.seats) {
+    // Deal order, both here and in the score: the first hand of a split is the
+    // left pile, whichever way the row is flipped. Mirroring it with the seats
+    // meant the same split read one way at one flip setting and the other way
+    // at the other, and left the live-hand ring indexed against an order the
+    // piles no longer had.
+    const hands = s.hands;
+    // hands.length === 1: a seat that has split holds two 21s at best, never a
+    // natural, so neither half is offered the BJ label.
+    const score = hands.map((h) => totalText(h, hands.length === 1))
+      .filter(Boolean).reverse().join(' | ');
+    // The name is the whole label; the seat letter is gone. An empty chair
+    // shows nothing — the score slot beside it already says "empty" — and your
+    // own seat falls back to YOU only if the feed has not named you.
+    const label = (s.mine && !s.name) ? 'YOU' : '';
+    const live = s.activeHand;
+    const busts = hands.map(isBust);
+    // Its own settled verdict once the money lands, and before that a bust,
+    // which is a loss the felt can already prove. Empty while still live.
+    const marks = hands.map((_, i) =>
+      (OUTCOME_CLASS[(s.handResults || [])[i]] || '').trim() || (busts[i] ? 'busted' : ''));
+    // Most conclusive first: how the money landed, then a bust while the round
+    // is still running, then whose turn it is. The settle is cleared when the
+    // next round starts dealing.
+    //
+    // A push is marked too, in neutral slate: "the stake came back" is a
+    // different fact from "the dealer has not finished".
+    const outcome = OUTCOME_CLASS[s.result] || '';
+    // Only when every hand is dead: a split with one hand still live is a seat
+    // that is still playing, and the red ring sits on the dead half.
+    const busted = !outcome && busts.length > 0 && busts.every(Boolean);
+    paintSpot(s.seat, label, hands, s.occupied ? score : 'empty',
+      (s.occupied ? '' : ' empty') +
+      (outcome || (busted ? ' busted' : '') ||
+       (s.dealing || s.acting ? ' dealing' : '')) +
+      (s.mine ? ' mine' : ''),
+      // Only worth pointing at when there is more than one hand to choose from.
+      hands.length > 1 ? live : null,
+      // Likewise: on a single hand the spot's own outline already said it.
+      hands.length > 1 ? marks : [],
+      // Raw — paintSpot clips it, so the mark can be its own element.
+      s.occupied ? (s.name || '') : '',
+      // Your own seat points at the big readout instead of repeating it.
+      s.mine ? { text: 'YOU', cls: 'you' }
+             : moveFor(s.seat, (s.hands[s.activeHand ?? 0] || []), t.dealer.cards[0], s.advice));
+  }
+  const d = t.dealer;
+  paintSpot('DEALER', 'DEALER', d.cards.length ? [d.cards] : [], totalText(d.cards),
+    (d.cards.length ? '' : ' empty') + (d.dealing || d.acting ? ' dealing' : ''));
+}
+
+// The last few completed rounds, newest first. Totals are computed from the
+// cards for the same reason every other total here is: the feed's `soft` flag
+// disagreed with the arithmetic on 154 of 702 ace hands.
+function bestTotal(cards) {
+  const { hard, aces } = handValue(cards);
+  return aces && hard + 10 <= 21 ? hard + 10 : hard;
+}
+
+const HIST_CLASS = { win: 'won', loss: 'lost', push: 'drew' };
+
+// Two dots, never the "…" glyph, and text-overflow is off on both panels, so a
+// shortened name carries exactly one mark. Taken off the length rather than
+// added to it, so a clipped name is exactly as wide as the longest name that
+// fits whole and neither can widen its box.
+const CLIP_MARK = '..';
+
+const willClip = (n, max) => n.length > max;
+const clipHead = (n, max) => n.slice(0, max - CLIP_MARK.length);
+
+// For the panel that builds its markup as a string. The nickname half goes
+// through esc(); the mark is ours and does not.
+function nameHTML(raw, max) {
+  const n = raw || '';
+  return willClip(n, max)
+    ? esc(clipHead(n, max)) + `<span class="clip">${CLIP_MARK}</span>`
+    : esc(n);
+}
+
+// The same for a node written directly. Built from DOM nodes rather than
+// innerHTML, so the nickname is still never parsed as markup. data-name is the
+// change guard setText was giving for free.
+function setName(node, raw, max) {
+  const n = el(node);
+  if (!n) return;
+  const v = raw || '';
+  if (n.dataset.name === v) return;
+  n.dataset.name = v;
+  const clip = willClip(v, max);
+  n.textContent = clip ? clipHead(v, max) : v;
+  if (!clip) return;
+  const mark = document.createElement('span');
+  mark.className = 'clip';
+  mark.textContent = CLIP_MARK;
+  n.appendChild(mark);
+}
+// The felt's label line is one row of monospace: name on the left, total on the
+// right. So the name's budget is whatever the total does not use — a hard 20
+// is what fits, and the rest is arithmetic.
+//
+//   "13"       2 chars -> name gets 9    (GunsFirst)
+//   "8/18"     4 chars -> name gets 7    (GunsF.., a soft total is two wider)
+//   "12 | 13"  7 chars -> name gets 4    (Gun.., a split is wider still)
+//
+// Deriving it means a score format nobody has thought of yet still leaves the
+// name a correct amount of room, instead of colliding the way "8/18" did.
+const FELT_LABEL_CHARS = 11;
+const FELT_NAME_MIN = 4;    // below this a name says nothing; let it be short
+const HIST_NAME_MAX = 10;   // PRESIDRNTbigBBQ -> PRESIDRN..
+
+const feltNameMax = (score) =>
+  Math.max(FELT_NAME_MIN, FELT_LABEL_CHARS - String(score || '').length);
+
+function shortName(st) {
+  return nameHTML(st.mine ? 'YOU' : (st.name || st.seat), HIST_NAME_MAX);
+}
+
+let lastHistory = null;
+
+function renderHistory(rounds) {
+  const panel = $('histpanel');
+  lastHistory = rounds;
+  if (!rounds || !rounds.length) { panel.style.display = 'none'; return; }
+  panel.style.display = 'block';
+  setText($('histnote'), rounds.length === 1 ? '1 round' : `last ${rounds.length} rounds`);
+
+  setHTML('hist', rounds.map((r) => {
+    const dt = bestTotal(r.dealer);
+    const dealerBust = dt > 21;
+    const dealerBJ = isNatural(r.dealer);
+    // A settled dealer hand is hard by definition, so bestTotal rather than
+    // totalText's "8/18" reading.
+    const dealerVal = !r.dealer.length ? '—' : (dealerBJ ? 'BJ' : dt);
+    const dealer = `<span class="hd"><span class="hdt ${dealerBust ? 'hbust' : ''}">` +
+      `DEALER <span class="hdv${dealerBJ ? ' bj' : ''}">${dealerVal}</span>` +
+      `${dealerBust ? ' BUST' : ''}</span>` +
+      `<span class="hhand"><span class="hfan">${r.dealer.map(histCard).join('')}</span></span></span>`;
+
+    // Mirrored with the felt, by the same flag, so a row reads in the same
+    // direction as the table above it. The server sends deal order; a recap
+    // that ran the other way meant reading each row backwards.
+    const order = flipped ? r.seats.slice().reverse() : r.seats;
+
+    // Every chair, in seat order, so the columns line up round to round; the
+    // ones not dealt to become placeholders rather than gaps.
+    const bySeat = Object.fromEntries(order.map((st) => [st.seat, st]));
+    const seats = (flipped ? SEATS.slice().reverse() : SEATS).map((seatId) => {
+      const st = bySeat[seatId];
+      if (!st) return '<span class="hseat hempty"></span>';
+      // Deal order, like the felt: the first hand of a split is the top row
+      // here and the left pile there. The totals are read off these same
+      // hands rather than a second list — ordering one and not the other lands
+      // the wrong total against the wrong pile, the single misread a recap
+      // exists to prevent.
+      const hands = st.hands;
+
+      // One row per hand, so a split is two fans stacked rather than four cards
+      // in a line that cannot say which made which total.
+      const rows = hands.map((h) =>
+        `<span class="hhand"><span class="hfan">${h.map(histCard).join('')}</span></span>`).join('');
+      // Reversed against the rows, the same way the felt's label is reversed
+      // against its piles, so one split reads the same in both panels. How the
+      // money landed is the chip's border and text colour.
+      const totals = hands.map((h) => {
+        const t = bestTotal(h);
+        return t > 21 ? `${t}!` : String(t);
+      }).reverse().join(' | ');
+      const cls = HIST_CLASS[st.result] || '';
+      return `<span class="hseat ${cls}${st.mine ? ' mine' : ''}">` +
+             `<span class="hsq"><span class="hsn">${shortName(st)}</span>` +
+             `<span class="hst">${totals}</span></span>` +
+             `${rows}</span>`;
+    }).join('');
+
+    return `<div class="hround">${dealer}<div class="hseats">${seats}</div></div>`;
+  }).join(''));
+}
+
+// Same shape as the felt's cardHTML at about half the size: the felt is read at
+// a glance from across the room, this is looked at on purpose.
+function histCard(code) {
+  const c = String(code || '');
+  const suit = SUITS[c.slice(-1)];
+  if (!suit || c.includes('*')) return '<span class="hcard hidden"><span class="hcr">?</span></span>';
+  const red = c.endsWith('H') || c.endsWith('D');
+  return `<span class="hcard ${red ? 'red' : 'black'}">` +
+         `<span class="hcr">${rankLabel(c.slice(0, -1))}</span>` +
+         `<span class="hcs">${suit}</span></span>`;
+}
+
+// How much to put behind whom. The backed player's misplays come out of your
+// edge at the rate they have been playing at, and the seats are correlated —
+// so it is small numbers on several seats rather than your full ramp on each.
+function renderBehind(b) {
+  const panel = $('behindpanel');
+  if (!b) { panel.style.display = 'none'; return; }
+  panel.style.display = 'block';
+
+  const has = b.seats.length > 0;
+  // 'grid', not 'flex': an inline display wins over the stylesheet, where the
+  // two-column rule lives.
+  $('behindseats').style.display = has ? 'grid' : 'none';
+  $('behindnone').style.display = has ? 'none' : 'block';
+  // Who the sentence is about is the part you scan for. The substring is built
+  // from the same fields behind.js composed it from, so it matches exactly or
+  // not at all — it never guesses where a name ends.
+  const lead = b.best?.name
+    ? `${b.best.seat ? `${b.best.seat} · ` : ''}${b.best.name}`
+    : '';
+  const reason = esc(has ? '' : b.reason);
+  setHTML('behindnone', lead && reason.includes(esc(lead))
+    ? reason.replace(esc(lead), () => `<span class="lead">${esc(lead)}</span>`)
+    : reason);
+  setText('behindnote', has
+    ? 'their % is what their own misplays cost you per hand, as a share of your bet'
+    : '');
+  setText('behindtotal', has
+    ? `${b.seats.length} seat${b.seats.length === 1 ? '' : 's'} · ${fmt(b.totalDisplay)} total`
+    : '');
+
+  // In full, because "cost" alone says neither whose money nor over what: shoe
+  // edge, less what their misplays give away per hand.
+  setHTML('behindseats', b.seats.map((s) => `<div class="backseat">` +
+    `<div><div class="nm">${esc(s.name)}${s.seat ? `<span class="st"> · ${s.seat}</span>` : ''}</div>` +
+    // Two lines: the arithmetic, then what it rests on. The sample size is what
+    // you weigh the rest against.
+    `<div class="why">shoe ${pct(b.advantage)} − ${(s.cost * 100).toFixed(2)}% they misplay ` +
+    `= ${pct(s.net)} to you</div>` +
+    `<div class="why">from ${s.graded} decision${s.graded === 1 ? '' : 's'}</div></div>` +
+    `<div class="amt">${fmt(s.display)}</div></div>`).join(''));
+}
+
+// How well everyone else is playing. Sent only while you are out of the hand,
+// so `players` being absent is what hides the panel. Two numbers each: the
+// percentage, and the cost per decision that says whether the misses were
+// coin-flips or catastrophes.
+//
+// "table" is the default order because it lines each name up with the cards
+// above it, and it follows the felt's flip so the two never disagree.
+const ORDERS = ['table', 'confidence'];
+const ORDER_LABEL = { table: 'order: as seated', confidence: 'order: confidence' };
+let order = ORDERS.includes(localStorage.getItem('playerOrder'))
+  ? localStorage.getItem('playerOrder') : 'table';
+let lastPlayers = null;
+
+function sortPlayers(rows) {
+  const out = rows.slice();
+  if (order === 'table') {
+    // Seat index along the row as drawn. Anyone who has left has no seat and
+    // sorts to the end rather than to seat A.
+    const place = (r) => {
+      const i = SEATS.indexOf(r.seat);
+      if (i < 0) return 99;
+      return flipped ? SEATS.length - 1 - i : i;
+    };
+    out.sort((a, b) => place(a) - place(b));
+  } else {
+    // Wilson lower bound rather than the raw percentage, so 5-for-5 does not
+    // outrank 76-for-85. Unscored players have nothing to rank and go last.
+    const key = (r) => (r.score == null ? null : r.score);
+    out.sort((a, b) => {
+      if (key(a) == null || key(b) == null) return (key(a) == null) - (key(b) == null);
+      return (key(b) - key(a)) || b.graded - a.graded;
+    });
+  }
+  return out;
+}
+
+$('playersort').onclick = () => {
+  order = ORDERS[(ORDERS.indexOf(order) + 1) % ORDERS.length];
+  localStorage.setItem('playerOrder', order);
+  renderPlayers(lastPlayers);
+};
+
+function renderPlayers(rows) {
+  const panel = $('playerspanel');
+  if (!rows) { panel.style.display = 'none'; return; }
+  lastPlayers = rows;
+  setText($('playersort'), ORDER_LABEL[order]);
+  // Explicitly 'block': the panel's own rule is display:none, so clearing the
+  // inline style would fall back to hidden.
+  panel.style.display = 'block';
+
+  // Only the empty state says anything; numbers speak for themselves.
+  const scored = rows.filter((r) => r.pct != null);
+  setText($('playersnote'), scored.length ? '' : 'watching — nothing scored yet');
+
+  setHTML('players', sortPlayers(rows).map((r) => {
+    const cost = r.evLostPerHand;
+    // Per DECISION, as a share of the bet. Labelled "edge" so it reads on the
+    // same scale as the shoe edge above, though strictly it is EV given up.
+    // 1% is a rounding error over a session; 10% is a serious leak.
+    const band = cost == null ? '' : cost < 0.01 ? 'cost-low' : cost < 0.05 ? 'cost-mid' : 'cost-high';
+    const pct = r.pct == null ? '—' : (r.pct * 100).toFixed(0) + '%';
+    const seat = r.seat ? `<span class="st">${r.seat}</span>` : '';
+    // Zero is its own case: "even" and "we have not seen them settle a bet
+    // yet" both round to nothing, so an unplayed player shows a dash.
+    const bal = !r.rounds ? '—'
+      : (r.net > 0 ? '+' : '') + Math.round(r.net).toLocaleString();
+    const balBand = !r.rounds ? 'bal-even'
+      : r.net > 0 ? 'bal-up' : r.net < 0 ? 'bal-down' : 'bal-even';
+    // A clock that ran out is not a choice, so it never reaches the
+    // denominator. The '?' says the denominator is short; the count is on
+    // hover.
+    const q = r.timeouts
+      ? `<span class="q" title="${r.timeouts} decision${r.timeouts === 1 ? '' : 's'} timed out — not a choice, so not scored">?</span>`
+      : '';
+    // Off the main wager, sharing the colours the balance above uses for the
+    // same three meanings, and summing to `rounds`. Hidden until something
+    // settles: "0/0/0" reads as a record rather than as no evidence.
+    const wlp = !r.rounds ? ''
+      : `<div class="sub wlp"><span class="bal-up">${r.won}</span>/` +
+        `<span class="bal-down">${r.lost}</span>/` +
+        `<span class="bal-even">${r.pushed}</span></div>`;
+    const sub = r.pct == null
+      ? (r.pending ? 'scoring…' : 'no decisions yet')
+      : `${r.best}/${r.graded}${q} best · ${cost > 0 ? '-' : ''}${(cost * 100).toFixed(1)}% edge` +
+        (r.pending ? ' · scoring…' : '');
+    return `<div class="who"><div class="nm"><span class="n">${esc(r.name)}</span>${seat}</div>` +
+           `<div class="nums"><span class="pc ${band}">${pct}</span>` +
+           `<span class="bal ${balBand}">${bal}</span></div>` +
+           `${wlp}<div class="sub">${sub}</div></div>`;
+  }).join(''));
+}
+
+// Names come from other players and land in innerHTML, so they are escaped.
+const esc = (t) => String(t).replace(/[&<>"']/g, (c) =>
+  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+// Only ever shown when it is genuinely about the hand in front of you: seated,
+// cards dealt, dealer showing. While the engine is working the panel says so
+// rather than showing the previous hand's answer, which would be the one
+// actively harmful thing it could do.
+const PLAY_LABEL = { hit: 'HIT', stand: 'STAND', double: 'DOUBLE', split: 'SPLIT',
+                     surrender: 'SURRENDER', bust: 'BUST' };
+
+// The margin is the honest part: how much the best action beats the next-best.
+// Near zero means the decision does not matter.
+function playReason(p, trusted) {
+  if (p.action === 'bust') return 'over 21 — the hand is done';
+  if (p.isBlackjack) return 'pays 3:2 — nothing to decide';
+  const m = p.margin || 0;
+  const base = m < 0.005
+    ? `barely better than the alternative (+${(m * 100).toFixed(2)}% of your bet) — close call`
+    : `beats the next-best action by ${(m * 100).toFixed(1)}% of your bet`;
+// Without a clean shoe the composition is incomplete, so this degrades to
+// basic strategy — still the right play, just not an edge over one.
+  return trusted ? base : `${base}  ·  shoe untrusted, so this is basic strategy, not a deviation`;
+}
+
+// What each seat should do, kept steady across recomputation.
+//
+// The engine is composition-exact, so every card dealt anywhere invalidates
+// every seat's cached answer at once. The honest report of that is `thinking`,
+// and showing it made each seat flicker STAND -> ... -> STAND several times a
+// round, reading as indecision about a decision that never moved.
+//
+// So a seat holds its last answer while it is recomputed, but only while the
+// HAND is unchanged: the key is that seat's own cards and the dealer upcard,
+// so a card landing elsewhere holds the answer while a card landing HERE
+// clears it. Never the previous hand's action for the hand in front of you.
+const heldMove = new Map();   // seat -> { key, parts }
+
+// The margin, as above: how much the best action beats the next-best. Near
+// zero means a seat that got it "wrong" gave up nothing, which is worth
+// knowing before reading a verdict as a mistake.
+function moveParts(advice) {
+  const action = advice.action;
+  const label = advice.isBlackjack ? 'BLACKJACK' : (PLAY_LABEL[action] || action);
+  const cls = advice.isBlackjack ? 'p-bj' : 'p-' + action;
+
+  // Nothing left to choose: a natural pays itself, a bust is over, and an
+  // action with no alternative has no margin. One word, centred.
+  const others = Object.entries(advice.ev || {})
+    .filter(([k]) => k !== action)
+    .sort((a, b) => b[1] - a[1]);
+  if (advice.isBlackjack || action === 'bust' || !others.length) {
+    return { text: label, cls };
+  }
+
+  const m = advice.margin || 0;
+  return {
+    text: label,
+    // Two decimals under half a percent: at one, every close call prints
+    // "+0.0%", which reads as no margin rather than a small one.
+    margin: '+' + (m * 100).toFixed(m < 0.005 ? 2 : 1) + '%',
+    alt: 'vs ' + (PLAY_LABEL[others[0][0]] || others[0][0]),
+    cls,
+  };
+}
+
+function moveFor(seat, cards, upcard, advice) {
+  const key = `${cards.join(',')}|${upcard || ''}`;
+  const blank = { text: '', cls: 'none' };
+  if (!cards.length) { heldMove.delete(seat); return blank; }
+
+  const settled = advice && !advice.thinking && advice.action;
+  if (settled) {
+    const parts = moveParts(advice);
+    heldMove.set(seat, { key, parts });
+    return parts;
+  }
+  // Still working. Hold the previous answer only if it was for THIS hand.
+  const held = heldMove.get(seat);
+  if (held && held.key === key) return held.parts;
+  return blank;
+}
+
+function renderPlay(p, trusted) {
+  const row = $('playrow');
+  if (!p) { row.style.display = 'none'; return; }
+  row.style.display = 'flex';
+
+  if (p.thinking || !p.action) {
+    setText($('playaction'), '…');
+    $('playaction').className = 'p-thinking';
+    setText($('playwhy'), 'working out the exact play from what is left in the shoe');
+    setText($('playev'), '');
+    return;
+  }
+
+  setText($('playaction'), p.isBlackjack ? 'BLACKJACK' : (PLAY_LABEL[p.action] || p.action));
+  $('playaction').className = p.isBlackjack ? 'p-bj' : 'p-' + p.action;
+
+  setText($('playwhy'), playReason(p, trusted));
+
+  setHTML('playev', Object.entries(p.ev)
+    .sort((a, b) => b[1] - a[1])
+    .map(([a, v]) => `<span class="evitem${a === p.action ? ' best' : ''}">` +
+                     `${PLAY_LABEL[a] || a} ${v >= 0 ? '+' : ''}${v.toFixed(3)}</span>`)
+    .join(''));
+}
+
+let lastBettingMs = null, lastBettingAt = 0;
+
+function render(s) {
+  window.__last = s;   // handy for poking at state from the console
+
+  // The hand in front of you outranks the table advice.
+  //
+  // SIT/LEAVE answers "should I be at this table", and once cards are out the
+  // money is committed and that advice cannot be acted on — LEAVE is
+  // simultaneously true and useless while you hold 16 against a ten. So a live
+  // hand takes the headline and the table advice moves to the line underneath.
+  const inHand = !!(s.play && (s.play.action || s.play.thinking));
+
+  if (inHand) {
+    const p = s.play;
+    const label = p.thinking ? '…' : (p.isBlackjack ? 'BLACKJACK' : (PLAY_LABEL[p.action] || p.action));
+    setText($('action'), label);
+    $('action').className = p.thinking ? 'p-thinking'
+      : (p.isBlackjack ? 'p-bj' : 'p-' + p.action);
+    setText('why', p.thinking
+      ? 'working out the exact play from what is left in the shoe'
+      : playReason(p, s.trusted));
+  } else {
+    setText($('action'), s.action);
+    $('action').className = 'a-' + s.action;
+    // No reason line: the verdict restated its own inputs — "edge -0.55% below
+    // sit threshold" beside an EDGE tile already reading -0.55%. A reason that
+    // is NOT already on screen, such as an untrusted shoe, still reaches
+    // #trustwhy beside the badge.
+    setText($('why'), '');
+  }
+
+  // Exists to keep the table advice visible once a live hand has the headline.
+  $('stance').style.display = inHand ? '' : 'none';
+  if (inHand) {
+    // Same clause dropped here: while you hold a hand this line only says what
+    // the table advice WOULD be, and its reason was the same restatement.
+    setText('stance', `table advice: ${s.action}${s.betUnits ? ` ${s.betUnits}u` : ''}`);
+  }
+
+  // Once the cut card is out, both metrics say so instead of carrying a number.
+  // The shoe still has a real edge for its last round, but there is no NEXT bet
+  // to size off it, and a figure in the slot invites one.
+  if (s.shoeSpent) {
+    setText($('adv'), 'CUT CARD');
+    $('adv').className = 'v cut';
+    setText($('sitbar'), 'shoe ends this round');
+    setText($('bet'), 'CUT CARD');
+    $('bet').className = 'v cut';
+    setText($('betchips'), 'wait for the shuffle');
+  } else {
+    setText($('adv'), pct(s.advantage));
+    $('adv').className = 'v ' + (s.advantage >= 0 ? 'pos' : 'neg');
+    // The threshold is named rather than baked into the number above it.
+    setText('sitbar', s.sitAdvantage == null ? ''
+      : `worth sitting at ${pct(s.sitAdvantage)}`);
+    // Never "—": if the model likes the shoe this is the ramped bet, and if not
+    // it is what to bet should you play anyway, coloured to say which.
+    if (s.betUnits) {
+      setText($('bet'), s.betUnits + 'u');
+      $('bet').className = 'v pos';
+      setText($('betchips'), '');
+    } else {
+      setText($('bet'), s.betIfPlaying + 'u');
+      $('bet').className = 'v hedge';
+      // Says this is not the bet the model is asking for.
+      setText('betchips', 'if you play anyway');
+    }
+  }
+
+  setText($('trustbadge'), s.trusted ? 'TRUSTED' : 'UNTRUSTED');
+  $('trustbadge').className = 'badge ' + (s.trusted ? 't-yes' : 't-no');
+  // Nothing to press once the shoe is already untrusted — the only way back
+  // is a reshuffle.
+  $('untrust').disabled = !s.trusted;
+  setText($('untrust'), s.trusted ? 'mark shoe untrusted' : 'shoe untrusted');
+  // When the action IS the trust state, this repeats the line above it. Check
+  // both lines, not just #why: with a live hand the reason moves into #stance.
+  $('cutwarn').style.display = s.shoeSpent ? 'inline-block' : 'none';
+
+  const said = [$('why').textContent, inHand ? $('stance').textContent : '  '];
+  const trustBits = [];
+  if (s.trustReason && !said.some((t) => t.includes(s.trustReason))) trustBits.push(s.trustReason);
+  // A footnote for when warnings exist but are not the reason for the trust
+  // state; when they are, trustReason has already said so.
+  if (s.warnings && !s.trustReason.includes('warning')) {
+    trustBits.push(`${s.warnings} warning(s)`);
+  }
+  setText($('trustwhy'), trustBits.join('  ·  '));
+
+  const total = 416;
+  $('fill').style.width = Math.min(100, (s.dealt / total) * 100) + '%';
+  $('cut').style.left = ((s.cutSeenAtCard ?? s.expectedCutCard) / total) * 100 + '%';
+  setText($('dealt'), `${s.dealt}/${total} dealt`);
+  setText($('decksleft'), `${s.decksLeft.toFixed(2)} decks left`);
+  setText($('rounds'), `shoe #${s.shoeIndex}, ${s.rounds} rounds`);
+  setText($('phase'), s.phase || '—');
+
+  renderFelt(s.table);
+  renderPlay(s.play, s.trusted);
+  renderBehind(s.behind);
+  renderPlayers(s.players);
+  renderHistory(s.history);
+
+  setText($('tc'), (s.trueCount >= 0 ? '+' : '') + s.trueCount.toFixed(1));
+  $('tc').className = s.trueCount >= 0 ? 'pos' : 'neg';
+  // A true count of +21 beside an edge of 0.00% looks like a bug unless the
+  // reason is there: the count is still true of the stub, which is about to be
+  // shuffled away.
+  setText($('rc'), `RC ${s.runningCount >= 0 ? '+' : ''}${s.runningCount}`);
+
+  if (s.dealerUpcard) {
+    // No upcard rank here — the card itself is drawn immediately to the right.
+    setText($('dealer'), `busts ${(s.dealerBust * 100).toFixed(1)}%`);
+    $('dealer').className = s.dealerBust > 0.35 ? 'pos' : '';
+  } else {
+    setText($('dealer'), '—');
+    $('dealer').className = 'muted';
+  }
+
+  // Insurance is exact, not estimated: it is the ten-density of the remainder.
+  const ins = s.insurance;
+  if (ins && ins.offered) {
+    const take = ins.take;
+    $('insurance').textContent =
+      `INSURANCE: ${take ? 'YES' : 'NO'} — ${(ins.pTen * 100).toFixed(1)}% tens (need 33.3%)`;
+    $('insurance').className = take ? 'pos' : 'neg';
+  } else if (ins) {
+    setText($('insurance'), `tens ${(ins.pTen * 100).toFixed(1)}%`);
+    $('insurance').className = 'muted';
+  }
+
+  for (const r of RANKS) {
+    setText($('n-' + r), s.remaining[r]);
+    const sk = s.skew[r] || 0;
+    const mag = Math.min(1, Math.abs(sk) / 0.25);
+    $('n-' + r).style.color = sk >= 0
+      ? `color-mix(in srgb, var(--rich) ${mag * 100}%, var(--ink))`
+      : `color-mix(in srgb, var(--poor) ${mag * 100}%, var(--ink))`;
+  }
+
+  lastBettingMs = s.bettingMsLeft;
+  lastBettingAt = performance.now();
+}
+
+// Tick the countdown locally so it moves smoothly between pushes.
+setInterval(() => {
+  if (lastBettingMs == null) { setText('countdown', '—'); $('countdown').className = 'v muted'; return; }
+  const left = Math.max(0, lastBettingMs - (performance.now() - lastBettingAt));
+  setText($('countdown'), (left / 1000).toFixed(1) + 's');
+  $('countdown').className = 'v ' + (left < 4000 ? 'neg' : 'pos');
+}, 100);
+
+// One direction only, and the server agrees: there is no re-trust route.
+$('untrust').onclick = () => {
+  $('untrust').disabled = true;
+  fetch('/untrust', { method: 'POST' }).catch(() => {});
+};
+
+let es;
+function connect() {
+  es = new EventSource('/events');
+  es.onmessage = (e) => { $('stale').style.display = 'none'; render(JSON.parse(e.data)); };
+  es.onerror = () => { $('stale').style.display = 'inline-block'; };
+}
+connect();
+</script>
+</body>
+</html>

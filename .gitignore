@@ -1,0 +1,20 @@
+node_modules/
+
+# Persisted browser logins. Both hold live session cookies — .profile is launch
+# mode's, .edge-profile is the CDP launcher's. Never commit.
+.profile/
+.edge-profile/
+
+# Captures. Redacted URLs, but full game feeds and session history.
+data/
+
+# Unattended-run bookkeeping.
+overnight.log
+overnight.err.log
+overnight.pid
+
+# The only file that names where you play. See local.config.example.js.
+local.config.js
+
+# Working notes, not part of the published project.
+CLAUDE.md

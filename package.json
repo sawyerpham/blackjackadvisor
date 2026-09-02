@@ -1,0 +1,21 @@
+{
+  "name": "blackjack-advisor",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Live blackjack shoe tracking and betting advice from a casino client's own websocket feed",
+  "scripts": {
+    "edge": "node tools/edge.js",
+    "start": "node src/server.js",
+    "replay": "node src/server.js --replay data/feed-*.ndjson --speed 20",
+    "capture": "node tools/capture.js",
+    "overnight": "node tools/capture.js --overnight",
+    "analyze": "node tools/analyze.js data/feed-*.ndjson",
+    "rate": "node tools/rate.js data/feed-*.ndjson",
+    "test": "node test/selftest.js && node test/evtest.js && node test/dealertest.js && node test/playtest.js && node test/sidebettest.js && node test/gradetest.js",
+    "postinstall": "playwright install msedge || true",
+    "live": "node src/server.js --record"
+  },
+  "dependencies": {
+    "playwright": "^1.49.0"
+  }
+}
