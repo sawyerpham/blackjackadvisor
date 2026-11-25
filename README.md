@@ -8,9 +8,7 @@ No computer vision — the client already receives every card as a plain string,
 for every seat, whether or not you are seated, and it arrives before the video.
 
 > **Advisory only.** Nothing here sends a click, keystroke, or request to the
-> casino. It reads and displays; you act. Software assistance almost certainly
-> violates the site's terms of service; the realistic downside is account
-> closure and confiscation of funds.
+> casino. It reads and displays; you act.
 
 ## Requirements
 
